@@ -13,6 +13,8 @@
         system: let
           pkgs = nixpkgs.legacyPackages.${system};
         in {
+          packages.${system}.default = pkgs.callPackage ./package.nix {};
+
           devShells.${system}.default = pkgs.mkShell {
             packages = with pkgs;
               [
