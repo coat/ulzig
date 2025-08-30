@@ -1,0 +1,14 @@
+.{
+    .name = .ulzig,
+    .version = "0.1.0",
+    .fingerprint = 0xb86f198a4146b340, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.15.1",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "LICENSE",
+        "README.md",
+    },
+}
