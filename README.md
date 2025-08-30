@@ -1,6 +1,7 @@
 # ulzig
 
-A Zig library for compressing and decompressing things with the [Uxn LZ Format
+A Zig library and small command line tool for compressing and decompressing
+things with the [Uxn LZ Format
 (ULZ)](https://wiki.xxiivv.com/site/ulz_format.html). This is a port of a [C
 implementation](https://git.sr.ht/~rabbits/uxn-utils/tree/main/item/cli/lz)
 that's a part of [uxn-utils](https://git.sr.ht/~rabbits/uxn-utils) by [Hundred
@@ -37,6 +38,20 @@ const ulz = b.dependency("ulzig", .{
 })
 
 mod.root_module.addImport("ulz", ulz.module("ulzig"));
+```
+
+### CLI
+
+Compress the file `foo` into `foo.ulz`:
+
+```bash
+ulz foo
+```
+
+Decompress `foo.ulz` into `foo`:
+
+```bash
+ulz -d foo.ulz
 ```
 
 ## Prior Art
