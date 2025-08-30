@@ -1,0 +1,109 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+
+concurrency:
+  # Cancels pending runs when a PR gets updated.
+  group: ${{ github.head_ref || github.run_id }}-${{ github.actor }}
+  cancel-in-progress: true
+
+permissions:
+  # Sets permission policy for `GITHUB_TOKEN`
+  contents: write
+
+jobs:
+  build-and-test:
+    strategy:
+      fail-fast: false
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Install Nix and use that to run our tests so our environment matches exactly.
+      - uses: cachix/install-nix-action@v31
+        with:
+          nix_path: nixpkgs=channel:nixos-stable
+
+      # Run our checks to catch quick issues
+      - run: nix flake check
+
+      - name: Run All Tests
+        run: nix develop -c zig build test --summary all
+
+      - name: Build x86 Linux
+        run: nix develop -c zig build -Dtarget=x86_64-linux -Doptimize=ReleaseSmall --prefix x86_64-linux
+
+      - name: Build aarch64 Linux
+        run: nix develop -c zig build -Dtarget=aarch64-linux -Doptimize=ReleaseSmall --prefix aarch64-linux
+
+      - name: Build x86 MacOS
+        run: nix develop -c zig build -Dtarget=x86_64-macos -Doptimize=ReleaseSmall --prefix x86_64-macos
+
+      - name: Build aarch64 MacOS
+        run: nix develop -c zig build -Dtarget=aarch64-macos -Doptimize=ReleaseSmall --prefix aarch64-macos
+
+      - name: Build Windows
+        run: nix develop -c zig build -Dtarget=x86_64-windows -Doptimize=ReleaseSmall --prefix x86_64-windows
+
+      - name: Strip Linux Binaries (sstrip)
+        run: |
+          nix develop -c sstrip x86_64-linux/bin/ulz
+          nix develop -c sstrip aarch64-linux/bin/ulz
+
+      - name: Create release artifacts
+        run: |
+          tar -czf x86_64-linux.tar.gz    -C x86_64-linux/bin   ulz
+          tar -czf aarch64-linux.tar.gz   -C aarch64-linux/bin  ulz
+          tar -czf x86_64-macos.tar.gz    -C x86_64-macos/bin   ulz
+          tar -czf aarch64-macos.tar.gz   -C aarch64-macos/bin  ulz
+          zip -j x86_64-windows.zip x86_64-windows/bin/ulz.exe
+
+
+      # Note: All artifacts will get bundled together into one tarball on the Actions page
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AllTargetBuilds
+          path: |
+            x86_64-linux.tar.gz
+            aarch64-linux.tar.gz
+            x86_64-macos.tar.gz
+            aarch64-macos.tar.gz
+            x86_64-windows.zip
+
+  # The `release` job only runs if the push is a tag.
+  # It depends on the `test` job completing successfully.
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: [build-and-test]
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: AllTargetBuilds
+
+      - name: Create GitHub Release
+        id: create_release
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          name: Release ${{ github.ref_name }}
+          body: "Automated release for tag ${{ github.ref }}"
+          files: |
+            x86_64-linux.tar.gz
+            aarch64-linux.tar.gz
+            x86_64-macos.tar.gz
+            aarch64-macos.tar.gz
+            x86_64-windows.zip
