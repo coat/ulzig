@@ -31,14 +31,14 @@ pub fn main() !void {
 
     for (files) |filename| {
         if (options.decompress) {
-            try decompressFile(allocator, filename);
+            try decompressFile(allocator, filename, options.output);
         } else if (options.compress) {
-            try compressFile(allocator, filename);
+            try compressFile(allocator, filename, options.output);
         }
     }
 }
 
-fn compressFile(arena: std.mem.Allocator, filename: []const u8) !void {
+fn compressFile(arena: std.mem.Allocator, filename: []const u8, output: ?[]const u8) !void {
     var file = std.fs.cwd().openFile(filename, .{}) catch |err| {
         fatal("unable to open '{s}': {s}", .{ filename, @errorName(err) });
     };
@@ -48,7 +48,7 @@ fn compressFile(arena: std.mem.Allocator, filename: []const u8) !void {
 
     const compressed = try ulz.encode(arena, input);
 
-    const output_filename = try std.fmt.allocPrint(arena, "{s}.ulz", .{filename});
+    const output_filename = if (output) |out| out else try std.fmt.allocPrint(arena, "{s}.ulz", .{filename});
 
     var output_file = std.fs.cwd().createFile(output_filename, .{}) catch |err| {
         fatal("unable to open '{s}' for writing: {s}", .{ output_filename, @errorName(err) });
@@ -58,7 +58,7 @@ fn compressFile(arena: std.mem.Allocator, filename: []const u8) !void {
     try output_file.writeAll(compressed[0..]);
 }
 
-fn decompressFile(arena: std.mem.Allocator, filename: []const u8) !void {
+fn decompressFile(arena: std.mem.Allocator, filename: []const u8, output_override: ?[]const u8) !void {
     var file = std.fs.cwd().openFile(filename, .{}) catch |err| {
         fatal("unable to open '{s}': {s}", .{ filename, @errorName(err) });
     };
@@ -68,12 +68,10 @@ fn decompressFile(arena: std.mem.Allocator, filename: []const u8) !void {
 
     const decompressed = try ulz.decode(arena, input);
 
-    const output_file_path = if (std.mem.endsWith(u8, filename, ".ulz"))
+    const output_file_path = if (output_override) |out| out else if (std.mem.endsWith(u8, filename, ".ulz"))
         filename[0 .. filename.len - 4]
     else
         try std.fmt.allocPrint(arena, "{s}.unlz", .{filename});
-
-    std.debug.print("Decompressed file: {s}\n", .{output_file_path});
 
     var output_file = std.fs.cwd().createFile(output_file_path, .{}) catch |err| {
         fatal("unable to open '{s}' for writing: {s}", .{ output_file_path, @errorName(err) });
@@ -97,15 +95,18 @@ const Flags = struct {
     pub const switches = .{
         .compress = 'z',
         .decompress = 'd',
+        .output = 'o',
     };
 
     pub const descriptions = .{
         .compress = "Compress (default)",
         .decompress = "Decompress",
+        .output = "Write output to a single file",
     };
 
     compress: bool = true,
     decompress: bool = false,
+    output: ?[]const u8 = null,
 
     positional: struct {
         pub const descriptions = .{
