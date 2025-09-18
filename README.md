@@ -54,6 +54,16 @@ Decompress `foo.ulz` into `foo`:
 ulz -d foo.ulz
 ```
 
+#### Installation
+
+Download the latest release from
+[GitHub](https://github.com/coat/ulzig/releases) and place the binary in your
+PATH.
+
+##### Nix
+
+`nix run github:coat/ulzig`
+
 ## Prior Art
 
 Original
