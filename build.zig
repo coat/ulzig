@@ -14,17 +14,18 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     }).module("flags");
 
+    const exe_mod = b.addModule("exe", .{
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .imports = &.{
+            .{ .name = "ulz", .module = mod },
+            .{ .name = "flags", .module = flags_mod },
+        },
+    });
+
     const exe = b.addExecutable(.{
         .name = "ulz",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "ulz", .module = mod },
-                .{ .name = "flags", .module = flags_mod },
-            },
-        }),
+        .root_module = exe_mod,
     });
 
     b.installArtifact(exe);
