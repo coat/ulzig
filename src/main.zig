@@ -18,67 +18,97 @@ pub fn main() !void {
 
     const args = try std.process.argsAlloc(allocator);
 
+    try run(
+        allocator,
+        .{
+            .compressFn = compressFile,
+            .decompressFn = decompressFile,
+        },
+        args,
+    );
+}
+
+fn run(arena: std.mem.Allocator, context: Operations, args: []const [:0]const u8) !void {
     const options = flags.parse(args, "ulz", Flags, .{});
 
-    const files = blk: {
+    // combine positional file and trailing files into a single list
+    var files = blk: {
         var all_files = std.ArrayList([]const u8).empty;
-        try all_files.append(allocator, options.positional.files);
+        try all_files.append(arena, options.positional.files);
         for (options.positional.trailing) |filename| {
-            try all_files.append(allocator, filename);
+            try all_files.append(arena, filename);
         }
         break :blk all_files.items;
     };
 
+    // only process the last file if output is specified
+    // flags.pars ensures at least one file is provided
+    if (options.output) |_| {
+        files = files[files.len - 1 ..];
+    }
+
     for (files) |filename| {
         if (options.decompress) {
-            try decompressFile(allocator, filename, options.output);
+            context.decompressFn(arena, filename, options.output);
         } else if (options.compress) {
-            try compressFile(allocator, filename, options.output);
+            context.compressFn(arena, filename, options.output);
         }
     }
 }
 
-fn compressFile(arena: std.mem.Allocator, filename: []const u8, output: ?[]const u8) !void {
+fn compressFile(arena: std.mem.Allocator, filename: []const u8, output: ?[]const u8) void {
     var file = std.fs.cwd().openFile(filename, .{}) catch |err| {
         fatal("unable to open '{s}': {s}", .{ filename, @errorName(err) });
     };
     defer file.close();
 
-    const input = try file.readToEndAlloc(arena, 1024 * 1024);
+    const input = file.readToEndAlloc(arena, 1024 * 1024) catch |err| {
+        fatal("unable to read '{s}': {s}", .{ filename, @errorName(err) });
+    };
 
-    const compressed = try ulz.encode(arena, input);
+    const compressed = ulz.encode(arena, input) catch |err| {
+        fatal("unable to compress '{s}': {s}", .{ filename, @errorName(err) });
+    };
 
-    const output_filename = if (output) |out| out else try std.fmt.allocPrint(arena, "{s}.ulz", .{filename});
+    const output_filename = if (output) |out| out else std.fmt.allocPrint(arena, "{s}.ulz", .{filename}) catch @panic("OOM");
 
     var output_file = std.fs.cwd().createFile(output_filename, .{}) catch |err| {
         fatal("unable to open '{s}' for writing: {s}", .{ output_filename, @errorName(err) });
     };
     defer output_file.close();
 
-    try output_file.writeAll(compressed[0..]);
+    output_file.writeAll(compressed[0..]) catch |err| {
+        fatal("unable to write to '{s}': {s}", .{ output_filename, @errorName(err) });
+    };
 }
 
-fn decompressFile(arena: std.mem.Allocator, filename: []const u8, output_override: ?[]const u8) !void {
+fn decompressFile(arena: std.mem.Allocator, filename: []const u8, output: ?[]const u8) void {
     var file = std.fs.cwd().openFile(filename, .{}) catch |err| {
         fatal("unable to open '{s}': {s}", .{ filename, @errorName(err) });
     };
     defer file.close();
 
-    const input = try file.readToEndAlloc(arena, 1024 * 1024);
+    const input = file.readToEndAlloc(arena, 1024 * 1024) catch |err| {
+        fatal("unable to read '{s}': {s}", .{ filename, @errorName(err) });
+    };
 
-    const decompressed = try ulz.decode(arena, input);
+    const decompressed = ulz.decode(arena, input) catch |err| {
+        fatal("unable to decompress '{s}': {s}", .{ filename, @errorName(err) });
+    };
 
-    const output_file_path = if (output_override) |out| out else if (std.mem.endsWith(u8, filename, ".ulz"))
+    const output_file_path = if (output) |out| out else if (std.mem.endsWith(u8, filename, ".ulz"))
         filename[0 .. filename.len - 4]
     else
-        try std.fmt.allocPrint(arena, "{s}.unlz", .{filename});
+        std.fmt.allocPrint(arena, "{s}.unlz", .{filename}) catch @panic("OOM");
 
     var output_file = std.fs.cwd().createFile(output_file_path, .{}) catch |err| {
         fatal("unable to open '{s}' for writing: {s}", .{ output_file_path, @errorName(err) });
     };
     defer output_file.close();
 
-    try output_file.writeAll(decompressed[0..]);
+    output_file.writeAll(decompressed[0..]) catch |err| {
+        fatal("unable to write to '{s}': {s}", .{ output_file_path, @errorName(err) });
+    };
 }
 
 fn fatal(comptime format: []const u8, args: anytype) noreturn {
@@ -116,6 +146,62 @@ const Flags = struct {
         files: []const u8,
         trailing: []const []const u8,
     },
+};
+
+var called_files: std.ArrayList([]const u8) = undefined;
+
+test "run processes only last file when -o is set" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    called_files = .empty;
+    defer called_files.deinit(allocator);
+
+    const mockOperation = struct {
+        pub fn call(alloc: std.mem.Allocator, filename: []const u8, _: ?[]const u8) void {
+            called_files.append(alloc, filename) catch return;
+        }
+    }.call;
+
+    const args = [_][:0]const u8{ "ulz", "-o", "out.ulz", "tests/test.txt", "tests/test2.txt" };
+    try run(allocator, .{
+        .compressFn = mockOperation,
+        .decompressFn = mockOperation,
+    }, args[0..]);
+
+    try std.testing.expectEqual(@as(usize, 1), called_files.items.len);
+    try std.testing.expectEqualStrings("tests/test2.txt", called_files.items[0]);
+}
+
+test "run processes all files when -o is not set" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    called_files = .empty;
+    defer called_files.deinit(allocator);
+
+    const mockOperation = struct {
+        pub fn call(alloc: std.mem.Allocator, filename: []const u8, _: ?[]const u8) void {
+            called_files.append(alloc, filename) catch return;
+        }
+    }.call;
+
+    const args = [_][:0]const u8{ "ulz", "tests/test.txt", "tests/test2.txt" };
+    try run(allocator, .{
+        .compressFn = mockOperation,
+        .decompressFn = mockOperation,
+    }, args[0..]);
+
+    try std.testing.expectEqual(@as(usize, 2), called_files.items.len);
+    try std.testing.expectEqualStrings("tests/test.txt", called_files.items[0]);
+    try std.testing.expectEqualStrings("tests/test2.txt", called_files.items[1]);
+}
+
+const Operations = struct {
+    compressFn: fn (std.mem.Allocator, []const u8, ?[]const u8) void,
+    decompressFn: fn (std.mem.Allocator, []const u8, ?[]const u8) void,
 };
 
 const ulz = @import("ulz");
