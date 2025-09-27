@@ -107,3 +107,27 @@ jobs:
             x86_64-macos.tar.gz
             aarch64-macos.tar.gz
             x86_64-windows.zip
+
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Install Nix and use that to run our tests so our environment matches exactly.
+      - uses: cachix/install-nix-action@v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+
+      - run: nix develop -c zig env
+
+      - name: Run tests with coverage
+        run: nix develop -c zig build test -Dcoverage -Dtarget=x86_64-linux --summary all
+
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          directory: zig-out/coverage
+          fail_ci_if_error: true
+          verbose: true
