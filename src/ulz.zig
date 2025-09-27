@@ -1,4 +1,4 @@
-//! This is a port of the wonderful C implementation by 100 rabbits: https://git.sr.ht/~rabbits/uxn-utils/tree/main/item/cli/lz
+//! This is a port of the wonderful C implementation by hundred rabbits: https://git.sr.ht/~rabbits/uxn-utils/tree/main/item/cli/lz
 
 pub const UlzError = error{
     OutputTooSmall,
@@ -16,7 +16,6 @@ const max_match_len: u16 = 0x3fff + min_match_length;
 /// The caller is responsible for freeing the returned slice.
 pub fn decode(allocator: std.mem.Allocator, compressed: []const u8) ![]u8 {
     var output = std.ArrayList(u8).empty;
-    errdefer output.deinit(allocator);
 
     var i: usize = 0;
     while (i < compressed.len) {
@@ -80,7 +79,6 @@ pub fn decode(allocator: std.mem.Allocator, compressed: []const u8) ![]u8 {
 /// The caller is responsible for freeing the returned slice.
 pub fn encode(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
     var output = std.ArrayList(u8).empty;
-    errdefer output.deinit(allocator);
 
     var in_pos: usize = 0;
     // Index of the active LIT command byte, used for combining literals.
@@ -142,10 +140,6 @@ pub fn encode(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
                 if (output.items[cmd_idx] < 0x7f) {
                     // The run is not full, so increment its length counter.
                     output.items[cmd_idx] += 1;
-                } else {
-                    // The run is full (128 bytes). Start a new one.
-                    active_lit_idx = output.items.len;
-                    try output.append(allocator, 0); // Command byte for length 1 (0 = len-1)
                 }
             } else {
                 // No active literal run. Start a new one.
@@ -199,6 +193,28 @@ test {
     const re_encoded_data = try encode(allocator, decoded_data);
     defer allocator.free(re_encoded_data);
     try std.testing.expectEqualSlices(u8, encoded_data, re_encoded_data);
+}
+
+test "CPY2" {
+    const allocator = std.testing.allocator;
+
+    const encoded_data: []const u8 = &.{ 0x00, 0x6f, 0xcb, 0xb3, 0x00 };
+
+    const expected_decoded_data: [3000]u8 = @splat('o');
+
+    // Test decoding
+    const decoded_data = try decode(allocator, encoded_data);
+    defer allocator.free(decoded_data);
+    try std.testing.expectEqualSlices(u8, &expected_decoded_data, decoded_data);
+
+    // Test encoding
+    const re_encoded_data = try encode(allocator, decoded_data);
+    defer allocator.free(re_encoded_data);
+    try std.testing.expectEqualSlices(u8, encoded_data, re_encoded_data);
+
+    const data: [300_000]u8 = @splat('o');
+    const encoded_large_data = try encode(allocator, &data);
+    defer allocator.free(encoded_large_data);
 }
 
 const std = @import("std");
