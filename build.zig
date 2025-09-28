@@ -43,12 +43,16 @@ pub fn build(b: *std.Build) void {
         run_cmd.addArgs(args);
     }
 
-    const mod_tests = b.addTest(.{ .root_module = mod, .use_llvm = true });
+    const mod_tests = b.addTest(.{
+        .root_module = mod,
+        .use_llvm = coverage,
+    });
 
     const run_mod_tests = b.addRunArtifact(mod_tests);
 
     const exe_tests = b.addTest(.{
         .root_module = exe.root_module,
+        .use_llvm = coverage,
     });
 
     const run_exe_tests = b.addRunArtifact(exe_tests);
@@ -58,18 +62,30 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_exe_tests.step);
 
     if (coverage) {
+        var run_test_steps: std.ArrayList(*std.Build.Step.Run) = .empty;
+        run_test_steps.append(b.allocator, run_mod_tests) catch @panic("OOM");
+        run_test_steps.append(b.allocator, run_exe_tests) catch @panic("OOM");
+
         const kcov_bin = b.findProgram(&.{"kcov"}, &.{}) catch "kcov";
 
-        const coverage_step = std.Build.Step.Run.create(b, "run coverage");
-        coverage_step.addArg(kcov_bin);
-        coverage_step.addPrefixedDirectoryArg("--include-pattern=", b.path("src"));
+        const merge_step = std.Build.Step.Run.create(b, "merge coverage");
+        merge_step.addArgs(&.{ kcov_bin, "--merge" });
+        merge_step.rename_step_with_output_arg = false;
+        const merged_coverage_output = merge_step.addOutputFileArg(".");
 
-        const coverage_output = coverage_step.addOutputFileArg(".");
+        for (run_test_steps.items) |step| {
+            step.setName(b.fmt("{s} (collect coverage)", .{step.step.name}));
 
-        coverage_step.addDirectoryArg(run_mod_tests.producer.?.getEmittedBin());
+            // prepend the kcov exec args
+            const argv = step.argv.toOwnedSlice(b.allocator) catch @panic("OOM");
+            step.addArgs(&.{ kcov_bin, "--collect-only" });
+            step.addPrefixedDirectoryArg("--include-pattern=", b.path("src"));
+            merge_step.addDirectoryArg(step.addOutputFileArg(step.producer.?.name));
+            step.argv.appendSlice(b.allocator, argv) catch @panic("OOM");
+        }
 
         const install_coverage = b.addInstallDirectory(.{
-            .source_dir = coverage_output,
+            .source_dir = merged_coverage_output,
             .install_dir = .{ .custom = "coverage" },
             .install_subdir = "",
         });
