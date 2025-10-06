@@ -21,19 +21,12 @@ pub fn main() u8 {
 
     const args = std.process.argsAlloc(allocator) catch return 1;
 
-    run(
-        allocator,
-        .{
-            .compressFn = compressFile,
-            .decompressFn = decompressFile,
-        },
-        args,
-    ) catch return 1;
+    run(allocator, args) catch return 1;
 
     return 0;
 }
 
-fn run(arena: std.mem.Allocator, context: Operations, args: []const [:0]const u8) !void {
+fn run(arena: std.mem.Allocator, args: []const [:0]const u8) !void {
     if (args.len < 2) {
         try std.fs.File.stdout().writeAll(usage);
         return error.NotEnoughArguments;
@@ -46,32 +39,14 @@ fn run(arena: std.mem.Allocator, context: Operations, args: []const [:0]const u8
             return;
         }
     }
-    // const options = flags.parse(args, "ulz", Flags, .{});
+
     const options = try Flags.fromArgs(args);
 
-    // // combine positional file and trailing files into a single list
-    // var files = blk: {
-    //     var all_files = std.ArrayList([]const u8).empty;
-    //     try all_files.append(arena, options.positional.files);
-    //     for (options.positional.trailing) |filename| {
-    //         try all_files.append(arena, filename);
-    //     }
-    //     break :blk all_files.items;
-    // };
-
-    // only process the last file if output is specified
-    // flags.pars ensures at least one file is provided
-    // if (options.output) |_| {
-    //     files = files[files.len - 1 ..];
-    // }
-
-    // for (files) |filename| {
-    if (options.decompress) {
-        context.decompressFn(arena, options.file.?, options.output);
-    } else if (options.compress) {
-        context.compressFn(arena, options.file.?, options.output);
+    if (options.compress) {
+        compressFile(arena, options.file.?, options.output);
+    } else {
+        decompressFile(arena, options.file.?, options.output);
     }
-    // }
 }
 
 const usage =
@@ -217,47 +192,37 @@ fn fatal(comptime format: []const u8, args: anytype) noreturn {
 
 const Flags = struct {
     compress: bool = true,
-    decompress: bool = false,
     output: ?[]const u8 = null,
     file: ?[]const u8 = null,
 
     pub fn fromArgs(args: []const [:0]const u8) !Flags {
-        var flgs: Flags = .{};
+        var flags: Flags = .default;
 
         var i: usize = 1;
         while (i < args.len) : (i += 1) {
             const arg = args[i];
             if (std.mem.eql(u8, "-z", arg) or std.mem.eql(u8, "--compress", arg)) {
                 i += 1;
-                flgs.compress = true;
             } else if (std.mem.eql(u8, "-d", arg) or std.mem.eql(u8, "--decompress", arg)) {
                 i += 1;
-                flgs.decompress = true;
+                flags.compress = false;
             } else if (std.mem.eql(u8, "-o", arg) or std.mem.eql(u8, "--output", arg)) {
                 i += 1;
                 if (i > args.len) fatal("expected arg after '{s}'", .{arg});
-                if (flgs.output != null) fatal("duplicated {s} argument", .{arg});
-                flgs.output = args[i];
+                if (flags.output != null) fatal("duplicated {s} argument", .{arg});
+                flags.output = args[i];
             } else if (i == args.len - 1) {
-                flgs.file = arg;
-                // fatal("unrecognized arg: '{s}'", .{arg});
+                flags.file = arg;
             }
         }
 
-        return flgs;
+        return flags;
     }
-};
 
-var called_files: std.ArrayList([]const u8) = undefined;
-
-const Operations = struct {
-    compressFn: fn (std.mem.Allocator, []const u8, ?[]const u8) void,
-    decompressFn: fn (std.mem.Allocator, []const u8, ?[]const u8) void,
+    pub const default: Flags = .{ .compress = true, .output = null, .file = null };
 };
 
 const ulz = @import("ulz");
-
-// const flags = @import("flags");
 
 const std = @import("std");
 const builtin = @import("builtin");
