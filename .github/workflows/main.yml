@@ -54,11 +54,6 @@ jobs:
       - name: Build Windows
         run: nix develop -c zig build -Dtarget=x86_64-windows -Doptimize=ReleaseSmall --prefix x86_64-windows
 
-      - name: Strip Linux Binaries (sstrip)
-        run: |
-          nix develop -c sstrip x86_64-linux/bin/ulz
-          nix develop -c sstrip aarch64-linux/bin/ulz
-
       - name: Create release artifacts
         run: |
           tar -czf x86_64-linux.tar.gz    -C x86_64-linux/bin   ulz

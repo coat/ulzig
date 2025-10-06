@@ -23,6 +23,16 @@ pub fn build(b: *std.Build) void {
         .root_module = exe_mod,
     });
 
+    const install_step = b.addInstallArtifact(exe, .{});
+    b.getInstallStep().dependOn(&install_step.step);
+
+    if (optimize != .Debug and target.result.os.tag == .linux) {
+        const sstrip = std.Build.Step.Run.create(b, "run sstrip");
+        sstrip.addArgs(&.{"sstrip"});
+        sstrip.addArtifactArg(exe);
+        install_step.step.dependOn(&sstrip.step);
+    }
+
     b.installArtifact(exe);
 
     const run_step = b.step("run", "Run ulz");
