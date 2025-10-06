@@ -1,5 +1,3 @@
-const std = @import("std");
-
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -11,17 +9,12 @@ pub fn build(b: *std.Build) void {
         .target = target,
     });
 
-    const flags_mod = b.dependency("flags", .{
-        .target = target,
-    }).module("flags");
-
     const exe_mod = b.addModule("exe", .{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
             .{ .name = "ulz", .module = mod },
-            .{ .name = "flags", .module = flags_mod },
         },
     });
 
@@ -92,3 +85,5 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&install_coverage.step);
     }
 }
+
+const std = @import("std");

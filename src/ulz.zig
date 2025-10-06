@@ -1,4 +1,5 @@
-//! This is a port of the wonderful C implementation by hundred rabbits: https://git.sr.ht/~rabbits/uxn-utils/tree/main/item/cli/lz
+//! This is a port of the wonderful C implementation by hundred rabbits:
+//! https://git.sr.ht/~rabbits/uxn-utils/tree/main/item/cli/lz
 
 pub const UlzError = error{
     OutputTooSmall,

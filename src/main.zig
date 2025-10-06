@@ -29,32 +29,65 @@ pub fn main() !void {
 }
 
 fn run(arena: std.mem.Allocator, context: Operations, args: []const [:0]const u8) !void {
-    const options = flags.parse(args, "ulz", Flags, .{});
-
-    // combine positional file and trailing files into a single list
-    var files = blk: {
-        var all_files = std.ArrayList([]const u8).empty;
-        try all_files.append(arena, options.positional.files);
-        for (options.positional.trailing) |filename| {
-            try all_files.append(arena, filename);
+    if (args.len < 2) {
+        try std.fs.File.stdout().writeAll(usage);
+        return error.NotEnoughArguments;
+    }
+    var i: usize = 1;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+        if (std.mem.eql(u8, "-h", arg) or std.mem.eql(u8, "--help", arg)) {
+            try std.fs.File.stdout().writeAll(usage);
+            return;
         }
-        break :blk all_files.items;
-    };
+    }
+    // const options = flags.parse(args, "ulz", Flags, .{});
+    const options = try Flags.fromArgs(args);
+
+    // // combine positional file and trailing files into a single list
+    // var files = blk: {
+    //     var all_files = std.ArrayList([]const u8).empty;
+    //     try all_files.append(arena, options.positional.files);
+    //     for (options.positional.trailing) |filename| {
+    //         try all_files.append(arena, filename);
+    //     }
+    //     break :blk all_files.items;
+    // };
 
     // only process the last file if output is specified
     // flags.pars ensures at least one file is provided
-    if (options.output) |_| {
-        files = files[files.len - 1 ..];
-    }
+    // if (options.output) |_| {
+    //     files = files[files.len - 1 ..];
+    // }
 
-    for (files) |filename| {
-        if (options.decompress) {
-            context.decompressFn(arena, filename, options.output);
-        } else if (options.compress) {
-            context.compressFn(arena, filename, options.output);
-        }
+    // for (files) |filename| {
+    if (options.decompress) {
+        context.decompressFn(arena, options.file.?, options.output);
+    } else if (options.compress) {
+        context.compressFn(arena, options.file.?, options.output);
     }
+    // }
 }
+
+const usage =
+    \\
+    \\Usage: ulz [-z | --compress] [-d | --decompress] [-o | --output <output>]
+    \\           [-h | --help] FILE
+    \\
+    \\Compress and decompress files using ULZ.
+    \\
+    \\Options:
+    \\
+    \\  -z, --compress   Compress (default)
+    \\  -d, --decompress Decompress
+    \\  -o, --output     Write output to a single file
+    \\  -h, --help       Show this help and exit
+    \\
+    \\Arguments:
+    \\
+    \\  FILE Input file
+    \\
+;
 
 fn compressFile(arena: std.mem.Allocator, filename: []const u8, output: ?[]const u8) void {
     var file = std.fs.cwd().openFile(filename, .{}) catch |err| {
@@ -178,86 +211,39 @@ fn fatal(comptime format: []const u8, args: anytype) noreturn {
 }
 
 const Flags = struct {
-    pub const description =
-        \\Compress and decompress files using ULZ.
-    ;
-
-    pub const switches = .{
-        .compress = 'z',
-        .decompress = 'd',
-        .output = 'o',
-    };
-
-    pub const descriptions = .{
-        .compress = "Compress (default)",
-        .decompress = "Decompress",
-        .output = "Write output to a single file",
-    };
-
     compress: bool = true,
     decompress: bool = false,
     output: ?[]const u8 = null,
+    file: ?[]const u8 = null,
 
-    positional: struct {
-        pub const descriptions = .{
-            .files = "One or more input files",
-        };
+    pub fn fromArgs(args: []const [:0]const u8) !Flags {
+        var flgs: Flags = .{};
 
-        files: []const u8,
-        trailing: []const []const u8,
-    },
+        var i: usize = 1;
+        while (i < args.len) : (i += 1) {
+            const arg = args[i];
+            if (std.mem.eql(u8, "-z", arg) or std.mem.eql(u8, "--compress", arg)) {
+                i += 1;
+                flgs.compress = true;
+            } else if (std.mem.eql(u8, "-d", arg) or std.mem.eql(u8, "--decompress", arg)) {
+                i += 1;
+                flgs.decompress = true;
+            } else if (std.mem.eql(u8, "-o", arg) or std.mem.eql(u8, "--output", arg)) {
+                i += 1;
+                if (i > args.len) fatal("expected arg after '{s}'", .{arg});
+                if (flgs.output != null) fatal("duplicated {s} argument", .{arg});
+                flgs.output = args[i];
+            } else if (i == args.len - 1) {
+                flgs.file = arg;
+                // fatal("unrecognized arg: '{s}'", .{arg});
+            }
+        }
+
+        return flgs;
+    }
 };
 
 var called_files: std.ArrayList([]const u8) = undefined;
-
-test "run processes only last file when -o is set" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    called_files = .empty;
-    defer called_files.deinit(allocator);
-
-    const mockOperation = struct {
-        pub fn call(alloc: std.mem.Allocator, filename: []const u8, _: ?[]const u8) void {
-            called_files.append(alloc, filename) catch return;
-        }
-    }.call;
-
-    const args = [_][:0]const u8{ "ulz", "-o", "out.ulz", "tests/test.txt", "tests/test2.txt" };
-    try run(allocator, .{
-        .compressFn = mockOperation,
-        .decompressFn = mockOperation,
-    }, args[0..]);
-
-    try std.testing.expectEqual(@as(usize, 1), called_files.items.len);
-    try std.testing.expectEqualStrings("tests/test2.txt", called_files.items[0]);
-}
-
-test "run processes all files when -o is not set" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    called_files = .empty;
-    defer called_files.deinit(allocator);
-
-    const mockOperation = struct {
-        pub fn call(alloc: std.mem.Allocator, filename: []const u8, _: ?[]const u8) void {
-            called_files.append(alloc, filename) catch return;
-        }
-    }.call;
-
-    const args = [_][:0]const u8{ "ulz", "-d", "tests/test.txt", "tests/test2.txt" };
-    try run(allocator, .{
-        .compressFn = mockOperation,
-        .decompressFn = mockOperation,
-    }, args[0..]);
-
-    try std.testing.expectEqual(@as(usize, 2), called_files.items.len);
-    try std.testing.expectEqualStrings("tests/test.txt", called_files.items[0]);
-    try std.testing.expectEqualStrings("tests/test2.txt", called_files.items[1]);
-}
 
 const Operations = struct {
     compressFn: fn (std.mem.Allocator, []const u8, ?[]const u8) void,
@@ -266,7 +252,7 @@ const Operations = struct {
 
 const ulz = @import("ulz");
 
-const flags = @import("flags");
+// const flags = @import("flags");
 
 const std = @import("std");
 const builtin = @import("builtin");

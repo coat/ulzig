@@ -2,7 +2,7 @@
   description = "ulzig";
 
   inputs = {
-    nixpkgs.url = "https://channels.nixos.org/nixos-unstable-small/nixexprs.tar.xz";
+    nixpkgs.url = "https://channels.nixos.org/nixos-unstable/nixexprs.tar.xz";
   };
 
   outputs = {nixpkgs, ...}: let

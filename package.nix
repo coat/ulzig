@@ -1,5 +1,6 @@
 {
   callPackage,
+  elfkickers,
   lib,
   stdenvNoCC,
   makeWrapper,
@@ -12,19 +13,13 @@ in
   stdenvNoCC.mkDerivation (
     finalAttrs: {
       name = "ulz";
-      version = "0.2.0";
+      version = "0.3.0";
       src = lib.cleanSource ./.;
       nativeBuildInputs = [
         zig_hook
         makeWrapper
-      ];
+      ] ++ lib.optionals stdenvNoCC.isLinux [elfkickers];
 
-      deps = callPackage ./build.zig.zon.nix {name = "ulz-${finalAttrs.version}";};
-
-      zigBuildFlags = [
-        "--system"
-        "${finalAttrs.deps}"
-      ];
       meta = {
         mainProgram = "ulz";
         license = lib.licenses.mit;
