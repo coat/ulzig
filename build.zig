@@ -9,18 +9,23 @@ pub fn build(b: *std.Build) void {
         .target = target,
     });
 
-    const exe_mod = b.addModule("exe", .{
+    var exe_mod_options: std.Build.Module.CreateOptions = .{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
             .{ .name = "ulz", .module = mod },
         },
-    });
+    };
+
+    if (optimize == .ReleaseSmall) {
+        exe_mod_options.unwind_tables = .none;
+        exe_mod_options.single_threaded = true;
+    }
 
     const exe = b.addExecutable(.{
         .name = "ulz",
-        .root_module = exe_mod,
+        .root_module = b.addModule("exe", exe_mod_options),
     });
 
     const install_step = b.addInstallArtifact(exe, .{});

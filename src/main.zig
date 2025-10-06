@@ -1,11 +1,14 @@
-pub fn main() !void {
+pub const std_options: @import("std").Options = .{ .keep_sigpipe = true };
+
+pub fn main() u8 {
     var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
     const gpa, const is_debug = gpa: {
         if (builtin.os.tag == .emscripten) break :gpa .{ std.heap.c_allocator, false };
         if (builtin.os.tag == .wasi) break :gpa .{ std.heap.wasm_allocator, false };
         break :gpa switch (builtin.mode) {
             .Debug, .ReleaseSafe => .{ debug_allocator.allocator(), true },
-            .ReleaseFast, .ReleaseSmall => .{ std.heap.smp_allocator, false },
+            .ReleaseFast => .{ std.heap.smp_allocator, false },
+            .ReleaseSmall => .{ std.heap.page_allocator, false },
         };
     };
     defer if (is_debug) {
@@ -16,16 +19,18 @@ pub fn main() !void {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const args = try std.process.argsAlloc(allocator);
+    const args = std.process.argsAlloc(allocator) catch return 1;
 
-    try run(
+    run(
         allocator,
         .{
             .compressFn = compressFile,
             .decompressFn = decompressFile,
         },
         args,
-    );
+    ) catch return 1;
+
+    return 0;
 }
 
 fn run(arena: std.mem.Allocator, context: Operations, args: []const [:0]const u8) !void {
