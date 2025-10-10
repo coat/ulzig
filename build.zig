@@ -65,14 +65,28 @@ pub fn build(b: *std.Build) void {
 
     const run_exe_tests = b.addRunArtifact(exe_tests);
 
+    const tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/tests.zig"),
+            .target = b.graph.host,
+            .imports = &.{
+                .{ .name = "ulz", .module = mod },
+            },
+        }),
+        .use_llvm = coverage,
+    });
+    const run_tests = b.addRunArtifact(tests);
+
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
+    test_step.dependOn(&run_tests.step);
 
     if (coverage) {
         var run_test_steps: std.ArrayList(*std.Build.Step.Run) = .empty;
         run_test_steps.append(b.allocator, run_mod_tests) catch @panic("OOM");
         run_test_steps.append(b.allocator, run_exe_tests) catch @panic("OOM");
+        run_test_steps.append(b.allocator, run_tests) catch @panic("OOM");
 
         const kcov_bin = b.findProgram(&.{"kcov"}, &.{}) catch "kcov";
 

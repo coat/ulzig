@@ -141,6 +141,10 @@ pub fn encode(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
                 if (output.items[cmd_idx] < 0x7f) {
                     // The run is not full, so increment its length counter.
                     output.items[cmd_idx] += 1;
+                } else {
+                    // The run is full (128 bytes). Start a new one.
+                    active_lit_idx = output.items.len;
+                    try output.append(allocator, 0); // Command byte for length 1 (0 = len-1)
                 }
             } else {
                 // No active literal run. Start a new one.
@@ -154,68 +158,6 @@ pub fn encode(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
     }
 
     return output.toOwnedSlice(allocator);
-}
-
-test {
-    const allocator = std.testing.allocator;
-
-    const encoded_data: []const u8 = &.{
-        0x28, 0x42, 0x6c, 0x75, 0x65, 0x20, 0x6c, 0x69, 0x6b, 0x65, 0x20, 0x6d, 0x79, 0x20,
-        0x63, 0x6f, 0x72, 0x76, 0x65, 0x74, 0x74, 0x65, 0x20, 0x69, 0x74, 0x73, 0x20, 0x69,
-        0x6e, 0x20, 0x61, 0x6e, 0x64, 0x20, 0x6f, 0x75, 0x74, 0x73, 0x69, 0x64, 0x65, 0x0a,
-        0x81, 0x28, 0x23, 0x61, 0x72, 0x65, 0x20, 0x74, 0x68, 0x65, 0x20, 0x77, 0x6f, 0x72,
-        0x64, 0x73, 0x20, 0x49, 0x20, 0x73, 0x61, 0x79, 0x0a, 0x41, 0x6e, 0x64, 0x20, 0x77,
-        0x68, 0x61, 0x74, 0x20, 0x49, 0x20, 0x74, 0x68, 0x69, 0x6e, 0x6b, 0x8a, 0x29, 0x09,
-        0x66, 0x65, 0x65, 0x6c, 0x69, 0x6e, 0x67, 0x73, 0x0a, 0x54, 0x80, 0x22, 0x06, 0x6c,
-        0x69, 0x76, 0x65, 0x20, 0x69, 0x6e, 0x80, 0x50, 0x17, 0x20, 0x6d, 0x65, 0x0a, 0x49,
-        0x27, 0x6d, 0x20, 0x62, 0x6c, 0x75, 0x65, 0x0a, 0x44, 0x61, 0x20, 0x62, 0x61, 0x20,
-        0x64, 0x65, 0x65, 0x20, 0x64, 0x82, 0x09, 0x00, 0x69, 0xb5, 0x12,
-    };
-
-    const expected_decoded_data =
-        \\Blue like my corvette its in and outside
-        \\Blue are the words I say
-        \\And what I think
-        \\Blue are the feelings
-        \\That live inside me
-        \\I'm blue
-        \\Da ba dee da ba di
-        \\Da ba dee da ba di
-        \\Da ba dee da ba di
-        \\Da ba dee da ba di
-    ;
-
-    // Test decoding
-    const decoded_data = try decode(allocator, encoded_data);
-    defer allocator.free(decoded_data);
-    try std.testing.expectEqualSlices(u8, expected_decoded_data, decoded_data);
-
-    // Test encoding
-    const re_encoded_data = try encode(allocator, decoded_data);
-    defer allocator.free(re_encoded_data);
-    try std.testing.expectEqualSlices(u8, encoded_data, re_encoded_data);
-}
-
-test "CPY2" {
-    const allocator = std.testing.allocator;
-
-    const encoded_data: []const u8 = &.{ 0x00, 0x6f, 0xcb, 0xb3, 0x00 };
-
-    const expected_decoded_data: [3000]u8 = @splat('o');
-
-    // Test decoding
-    const decoded_data = try decode(allocator, encoded_data);
-    defer allocator.free(decoded_data);
-    try std.testing.expectEqualSlices(u8, &expected_decoded_data, decoded_data);
-
-    // Test encoding
-    const re_encoded_data = try encode(allocator, decoded_data);
-    defer allocator.free(re_encoded_data);
-    try std.testing.expectEqualSlices(u8, encoded_data, re_encoded_data);
-
-    const data: [300_000]u8 = @splat('o');
-    const encoded_large_data = try encode(allocator, &data);
-    defer allocator.free(encoded_large_data);
 }
 
 const std = @import("std");
