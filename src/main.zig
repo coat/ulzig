@@ -21,21 +21,41 @@ pub fn main() u8 {
 
     const args = std.process.argsAlloc(allocator) catch return 1;
 
-    run(allocator, args) catch return 1;
+    var stdout_writer = std.fs.File.stdout().writer(&.{});
+    const stdout = &stdout_writer.interface;
+
+    run(
+        allocator,
+        .{
+            .compressFn = compressFile,
+            .decompressFn = decompressFile,
+        },
+        stdout,
+        args,
+    ) catch |err| {
+        switch (err) {
+            error.NotEnoughArguments => {
+                stdout.writeAll("Not enough arguments.\n" ++ usage) catch return 1;
+                stdout.flush() catch return 1;
+            },
+            else => {},
+        }
+        return 1;
+    };
 
     return 0;
 }
 
-fn run(arena: std.mem.Allocator, args: []const [:0]const u8) !void {
+fn run(arena: std.mem.Allocator, ops: Operations, stdout: *std.Io.Writer, args: []const [:0]const u8) !void {
     if (args.len < 2) {
-        try std.fs.File.stdout().writeAll(usage);
         return error.NotEnoughArguments;
     }
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
         const arg = args[i];
         if (std.mem.eql(u8, "-h", arg) or std.mem.eql(u8, "--help", arg)) {
-            try std.fs.File.stdout().writeAll(usage);
+            try stdout.writeAll(usage);
+            try stdout.flush();
             return;
         }
     }
@@ -43,10 +63,99 @@ fn run(arena: std.mem.Allocator, args: []const [:0]const u8) !void {
     const options = try Options.fromArgs(args);
 
     if (options.compress) {
-        compressFile(arena, options.file.?, options.output);
+        ops.compressFn(arena, options);
     } else {
-        decompressFile(arena, options.file.?, options.output);
+        ops.decompressFn(arena, options);
     }
+}
+
+var visits: std.ArrayList(Options) = undefined;
+
+test run {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    visits = .empty;
+    defer visits.deinit(arena);
+
+    const mockOperation = struct {
+        pub fn call(alloc: Allocator, options: Options) void {
+            visits.append(alloc, options) catch return;
+        }
+    }.call;
+
+    var writer = std.Io.Writer.Discarding.init(&.{});
+
+    const help_args = [_][:0]const u8{ "ulz", "-h" };
+    try run(
+        arena,
+        .{
+            .compressFn = mockOperation,
+            .decompressFn = mockOperation,
+        },
+        &writer.writer,
+        &help_args,
+    );
+
+    try expectEqual(0, visits.items.len);
+
+    const args_with_output = [_][:0]const u8{ "ulz", "-o", "out.ulz", "tests/test.txt" };
+    try run(
+        arena,
+        .{
+            .compressFn = mockOperation,
+            .decompressFn = mockOperation,
+        },
+        &writer.writer,
+        &args_with_output,
+    );
+    try expectEqual(1, visits.items.len);
+    try expectEqualStrings("out.ulz", visits.items[0].output.?);
+    try expectEqualStrings("tests/test.txt", visits.items[0].file.?);
+
+    visits = .empty;
+    const min_args = [_][:0]const u8{ "ulz", "tests/test.txt" };
+    try run(
+        arena,
+        .{
+            .compressFn = mockOperation,
+            .decompressFn = mockOperation,
+        },
+        &writer.writer,
+        &min_args,
+    );
+    try expectEqual(1, visits.items.len);
+    try expectEqual(true, visits.items[0].compress);
+    try expectEqual(null, visits.items[0].output);
+    try expectEqualStrings("tests/test.txt", visits.items[0].file.?);
+
+    visits = .empty;
+    const decompress_args = [_][:0]const u8{ "ulz", "-d", "tests/test.txt.ulz" };
+    try run(
+        arena,
+        .{
+            .compressFn = mockOperation,
+            .decompressFn = mockOperation,
+        },
+        &writer.writer,
+        &decompress_args,
+    );
+    try expectEqual(1, visits.items.len);
+    try expectEqual(false, visits.items[0].compress);
+    try expectEqualStrings("tests/test.txt.ulz", visits.items[0].file.?);
+
+    visits = .empty;
+    const no_args = [_][:0]const u8{"ulz"};
+    try std.testing.expectError(error.NotEnoughArguments, run(
+        arena,
+        .{
+            .compressFn = mockOperation,
+            .decompressFn = mockOperation,
+        },
+        &writer.writer,
+        &no_args,
+    ));
 }
 
 const usage =
@@ -68,7 +177,10 @@ const usage =
     \\
 ;
 
-fn compressFile(arena: std.mem.Allocator, filename: []const u8, output: ?[]const u8) void {
+fn compressFile(arena: std.mem.Allocator, options: Options) void {
+    const filename = options.file.?;
+    const output = options.output;
+
     var file = std.fs.cwd().openFile(filename, .{}) catch |err| {
         fatal("unable to open '{s}': {s}", .{ filename, @errorName(err) });
     };
@@ -113,7 +225,7 @@ test "compressFile writes compressed output" {
     const output_filename = "test_compress_output.ulz";
     defer std.fs.cwd().deleteFile(output_filename) catch {};
 
-    compressFile(allocator, test_filename, output_filename);
+    compressFile(allocator, .{ .file = test_filename, .output = output_filename });
 
     // Check output file exists and is not empty
     var file = try std.fs.cwd().openFile(output_filename, .{});
@@ -122,7 +234,10 @@ test "compressFile writes compressed output" {
     try std.testing.expect(compressed.len > 0);
 }
 
-fn decompressFile(arena: std.mem.Allocator, filename: []const u8, output: ?[]const u8) void {
+fn decompressFile(arena: std.mem.Allocator, options: Options) void {
+    const filename = options.file.?;
+    const output = options.output;
+
     var file = std.fs.cwd().openFile(filename, .{}) catch |err| {
         fatal("unable to open '{s}': {s}", .{ filename, @errorName(err) });
     };
@@ -166,21 +281,26 @@ test "decompressFile writes decompressed output" {
     }
     defer std.fs.cwd().deleteFile(test_filename) catch {};
 
-    const compressed_filename = "test_decompress_input.ulz";
+    const compressed_filename = "test_decompress_input.txt.ulz";
     defer std.fs.cwd().deleteFile(compressed_filename) catch {};
-    compressFile(allocator, test_filename, compressed_filename);
+
+    compressFile(allocator, .{ .file = test_filename, .output = compressed_filename });
 
     // Output file path for decompression
     const output_filename = "test_decompress_output.txt";
     defer std.fs.cwd().deleteFile(output_filename) catch {};
 
-    decompressFile(allocator, compressed_filename, output_filename);
+    decompressFile(allocator, .{ .file = compressed_filename, .output = output_filename });
 
     // Check output file matches original content
     var file = try std.fs.cwd().openFile(output_filename, .{});
     defer file.close();
     const decompressed = try file.readToEndAlloc(allocator, 1024);
-    try std.testing.expectEqualStrings(test_content, decompressed);
+    try expectEqualStrings(test_content, decompressed);
+
+    decompressFile(allocator, .{ .file = compressed_filename });
+    const default_output_filename = "test_decompress_output.txt";
+    defer std.fs.cwd().deleteFile(default_output_filename) catch {};
 }
 
 fn fatal(comptime format: []const u8, args: anytype) noreturn {
@@ -218,7 +338,15 @@ const Options = struct {
     pub const default: Options = .{ .compress = true, .output = null, .file = null };
 };
 
+const Operations = struct {
+    compressFn: fn (Allocator, Options) void,
+    decompressFn: fn (Allocator, Options) void,
+};
+
 const ulz = @import("ulz");
 
 const std = @import("std");
+const expectEqual = std.testing.expectEqual;
+const expectEqualStrings = std.testing.expectEqualStrings;
+const Allocator = std.mem.Allocator;
 const builtin = @import("builtin");
