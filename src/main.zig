@@ -40,7 +40,7 @@ fn run(arena: std.mem.Allocator, args: []const [:0]const u8) !void {
         }
     }
 
-    const options = try Flags.fromArgs(args);
+    const options = try Options.fromArgs(args);
 
     if (options.compress) {
         compressFile(arena, options.file.?, options.output);
@@ -51,14 +51,13 @@ fn run(arena: std.mem.Allocator, args: []const [:0]const u8) !void {
 
 const usage =
     \\
-    \\Usage: ulz [-z | --compress] [-d | --decompress] [-o | --output <output>]
+    \\Usage: ulz [-d | --decompress] [-o | --output <output>]
     \\           [-h | --help] FILE
     \\
     \\Compress and decompress files using ULZ.
     \\
     \\Options:
     \\
-    \\  -z, --compress   Compress (default)
     \\  -d, --decompress Decompress
     \\  -o, --output     Write output to a single file
     \\  -h, --help       Show this help and exit
@@ -190,21 +189,18 @@ fn fatal(comptime format: []const u8, args: anytype) noreturn {
     std.process.exit(1);
 }
 
-const Flags = struct {
+const Options = struct {
     compress: bool = true,
     output: ?[]const u8 = null,
     file: ?[]const u8 = null,
 
-    pub fn fromArgs(args: []const [:0]const u8) !Flags {
-        var flags: Flags = .default;
+    pub fn fromArgs(args: []const [:0]const u8) !Options {
+        var flags: Options = .default;
 
         var i: usize = 1;
         while (i < args.len) : (i += 1) {
             const arg = args[i];
-            if (std.mem.eql(u8, "-z", arg) or std.mem.eql(u8, "--compress", arg)) {
-                i += 1;
-            } else if (std.mem.eql(u8, "-d", arg) or std.mem.eql(u8, "--decompress", arg)) {
-                i += 1;
+            if (std.mem.eql(u8, "-d", arg) or std.mem.eql(u8, "--decompress", arg)) {
                 flags.compress = false;
             } else if (std.mem.eql(u8, "-o", arg) or std.mem.eql(u8, "--output", arg)) {
                 i += 1;
@@ -219,7 +215,7 @@ const Flags = struct {
         return flags;
     }
 
-    pub const default: Flags = .{ .compress = true, .output = null, .file = null };
+    pub const default: Options = .{ .compress = true, .output = null, .file = null };
 };
 
 const ulz = @import("ulz");
