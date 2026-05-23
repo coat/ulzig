@@ -1,42 +1,34 @@
-pub const std_options: @import("std").Options = .{ .keep_sigpipe = true };
+pub fn main(init: std.process.Init) u8 {
+    const arena = init.arena.allocator();
+    const io = init.io;
 
-pub fn main() u8 {
-    var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
-    const gpa, const is_debug = gpa: {
-        if (builtin.os.tag == .emscripten) break :gpa .{ std.heap.c_allocator, false };
-        if (builtin.os.tag == .wasi) break :gpa .{ std.heap.wasm_allocator, false };
-        break :gpa switch (builtin.mode) {
-            .Debug, .ReleaseSafe => .{ debug_allocator.allocator(), true },
-            .ReleaseFast => .{ std.heap.smp_allocator, false },
-            .ReleaseSmall => .{ std.heap.page_allocator, false },
-        };
-    };
-    defer if (is_debug) {
-        _ = debug_allocator.deinit();
-    };
+    var args_iter = std.process.Args.Iterator.initAllocator(init.minimal.args, arena) catch return 1;
+    _ = args_iter.skip();
 
-    var arena = std.heap.ArenaAllocator.init(gpa);
-    defer arena.deinit();
-    const allocator = arena.allocator();
+    var args_list: std.ArrayList([:0]const u8) = .empty;
+    args_list.append(arena, "ulz") catch return 1;
+    while (args_iter.next()) |arg| {
+        args_list.append(arena, arg) catch return 1;
+    }
+    const args = args_list.items;
 
-    const args = std.process.argsAlloc(allocator) catch return 1;
-
-    var stdout_writer = std.fs.File.stdout().writer(&.{});
-    const stdout = &stdout_writer.interface;
+    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_writer = std.Io.File.stdout().writerStreaming(io, &stdout_buffer);
 
     run(
-        allocator,
+        io,
+        arena,
         .{
             .compressFn = compressFile,
             .decompressFn = decompressFile,
         },
-        stdout,
+        &stdout_writer.interface,
         args,
     ) catch |err| {
         switch (err) {
             error.NotEnoughArguments => {
-                stdout.writeAll("Not enough arguments.\n" ++ usage) catch return 1;
-                stdout.flush() catch return 1;
+                stdout_writer.interface.writeAll("Not enough arguments.\n" ++ usage) catch return 1;
+                stdout_writer.interface.flush() catch return 1;
             },
             else => {},
         }
@@ -46,7 +38,7 @@ pub fn main() u8 {
     return 0;
 }
 
-fn run(arena: std.mem.Allocator, ops: Operations, stdout: *std.Io.Writer, args: []const [:0]const u8) !void {
+fn run(io: std.Io, arena: std.mem.Allocator, ops: Operations, stdout: *std.Io.Writer, args: []const [:0]const u8) !void {
     if (args.len < 2) {
         return error.NotEnoughArguments;
     }
@@ -63,9 +55,9 @@ fn run(arena: std.mem.Allocator, ops: Operations, stdout: *std.Io.Writer, args: 
     const options = try Options.fromArgs(args);
 
     if (options.compress) {
-        ops.compressFn(arena, options);
+        ops.compressFn(io, arena, options);
     } else {
-        ops.decompressFn(arena, options);
+        ops.decompressFn(io, arena, options);
     }
 }
 
@@ -75,20 +67,23 @@ test run {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
+    const io = std.testing.io;
 
     visits = .empty;
     defer visits.deinit(arena);
 
     const mockOperation = struct {
-        pub fn call(alloc: Allocator, options: Options) void {
+        pub fn call(_: std.Io, alloc: Allocator, options: Options) void {
             visits.append(alloc, options) catch return;
         }
     }.call;
 
-    var writer = std.Io.Writer.Discarding.init(&.{});
+    var discard_buf: [64]u8 = undefined;
+    var writer = Io.Writer.Discarding.init(&discard_buf);
 
     const help_args = [_][:0]const u8{ "ulz", "-h" };
     try run(
+        io,
         arena,
         .{
             .compressFn = mockOperation,
@@ -102,6 +97,7 @@ test run {
 
     const args_with_output = [_][:0]const u8{ "ulz", "-o", "out.ulz", "tests/test.txt" };
     try run(
+        io,
         arena,
         .{
             .compressFn = mockOperation,
@@ -117,6 +113,7 @@ test run {
     visits = .empty;
     const min_args = [_][:0]const u8{ "ulz", "tests/test.txt" };
     try run(
+        io,
         arena,
         .{
             .compressFn = mockOperation,
@@ -133,6 +130,7 @@ test run {
     visits = .empty;
     const decompress_args = [_][:0]const u8{ "ulz", "-d", "tests/test.txt.ulz" };
     try run(
+        io,
         arena,
         .{
             .compressFn = mockOperation,
@@ -148,6 +146,7 @@ test run {
     visits = .empty;
     const no_args = [_][:0]const u8{"ulz"};
     try std.testing.expectError(error.NotEnoughArguments, run(
+        io,
         arena,
         .{
             .compressFn = mockOperation,
@@ -177,16 +176,11 @@ const usage =
     \\
 ;
 
-fn compressFile(arena: std.mem.Allocator, options: Options) void {
+fn compressFile(io: std.Io, arena: std.mem.Allocator, options: Options) void {
     const filename = options.file.?;
     const output = options.output;
 
-    var file = std.fs.cwd().openFile(filename, .{}) catch |err| {
-        fatal("unable to open '{s}': {s}", .{ filename, @errorName(err) });
-    };
-    defer file.close();
-
-    const input = file.readToEndAlloc(arena, 1024 * 1024) catch |err| {
+    const input = Io.Dir.cwd().readFileAlloc(io, filename, arena, .unlimited) catch |err| {
         fatal("unable to read '{s}': {s}", .{ filename, @errorName(err) });
     };
 
@@ -194,14 +188,14 @@ fn compressFile(arena: std.mem.Allocator, options: Options) void {
         fatal("unable to compress '{s}': {s}", .{ filename, @errorName(err) });
     };
 
-    const output_filename = if (output) |out| out else std.fmt.allocPrint(arena, "{s}.ulz", .{filename}) catch @panic("OOM");
+    const output_filename = if (output) |out_filename| out_filename else std.fmt.allocPrint(arena, "{s}.ulz", .{filename}) catch @panic("OOM");
 
-    var output_file = std.fs.cwd().createFile(output_filename, .{}) catch |err| {
+    var output_file = Io.Dir.cwd().createFile(io, output_filename, .{}) catch |err| {
         fatal("unable to open '{s}' for writing: {s}", .{ output_filename, @errorName(err) });
     };
-    defer output_file.close();
+    defer output_file.close(io);
 
-    output_file.writeAll(compressed[0..]) catch |err| {
+    output_file.writeStreamingAll(io, compressed[0..]) catch |err| {
         fatal("unable to write to '{s}': {s}", .{ output_filename, @errorName(err) });
     };
 }
@@ -210,40 +204,31 @@ test "compressFile writes compressed output" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
+    const io = std.testing.io;
 
-    // Prepare a test file
     const test_filename = "test_compress_input.txt";
     const test_content = "hello world";
     {
-        var file = try std.fs.cwd().createFile(test_filename, .{});
-        defer file.close();
-        try file.writeAll(test_content);
+        var file = try Io.Dir.cwd().createFile(io, test_filename, .{});
+        defer file.close(io);
+        try file.writeStreamingAll(io, test_content);
     }
-    defer std.fs.cwd().deleteFile(test_filename) catch {};
+    defer Io.Dir.cwd().deleteFile(io, test_filename) catch {};
 
-    // Output file path
     const output_filename = "test_compress_output.ulz";
-    defer std.fs.cwd().deleteFile(output_filename) catch {};
+    defer Io.Dir.cwd().deleteFile(io, output_filename) catch {};
 
-    compressFile(allocator, .{ .file = test_filename, .output = output_filename });
+    compressFile(io, allocator, .{ .file = test_filename, .output = output_filename });
 
-    // Check output file exists and is not empty
-    var file = try std.fs.cwd().openFile(output_filename, .{});
-    defer file.close();
-    const compressed = try file.readToEndAlloc(allocator, 1024);
+    const compressed = try Io.Dir.cwd().readFileAlloc(io, output_filename, allocator, .unlimited);
     try std.testing.expect(compressed.len > 0);
 }
 
-fn decompressFile(arena: std.mem.Allocator, options: Options) void {
+fn decompressFile(io: std.Io, arena: std.mem.Allocator, options: Options) void {
     const filename = options.file.?;
     const output = options.output;
 
-    var file = std.fs.cwd().openFile(filename, .{}) catch |err| {
-        fatal("unable to open '{s}': {s}", .{ filename, @errorName(err) });
-    };
-    defer file.close();
-
-    const input = file.readToEndAlloc(arena, 1024 * 1024) catch |err| {
+    const input = Io.Dir.cwd().readFileAlloc(io, filename, arena, .unlimited) catch |err| {
         fatal("unable to read '{s}': {s}", .{ filename, @errorName(err) });
     };
 
@@ -256,12 +241,12 @@ fn decompressFile(arena: std.mem.Allocator, options: Options) void {
     else
         std.fmt.allocPrint(arena, "{s}.unlz", .{filename}) catch @panic("OOM");
 
-    var output_file = std.fs.cwd().createFile(output_file_path, .{}) catch |err| {
+    var output_file = Io.Dir.cwd().createFile(io, output_file_path, .{}) catch |err| {
         fatal("unable to open '{s}' for writing: {s}", .{ output_file_path, @errorName(err) });
     };
-    defer output_file.close();
+    defer output_file.close(io);
 
-    output_file.writeAll(decompressed[0..]) catch |err| {
+    output_file.writeStreamingAll(io, decompressed[0..]) catch |err| {
         fatal("unable to write to '{s}': {s}", .{ output_file_path, @errorName(err) });
     };
 }
@@ -270,37 +255,33 @@ test "decompressFile writes decompressed output" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
+    const io = std.testing.io;
 
-    // Prepare a test file and compress it
     const test_filename = "test_decompress_input.txt";
     const test_content = "zig is fun";
     {
-        var file = try std.fs.cwd().createFile(test_filename, .{});
-        defer file.close();
-        try file.writeAll(test_content);
+        var file = try Io.Dir.cwd().createFile(io, test_filename, .{});
+        defer file.close(io);
+        try file.writeStreamingAll(io, test_content);
     }
-    defer std.fs.cwd().deleteFile(test_filename) catch {};
+    defer Io.Dir.cwd().deleteFile(io, test_filename) catch {};
 
     const compressed_filename = "test_decompress_input.txt.ulz";
-    defer std.fs.cwd().deleteFile(compressed_filename) catch {};
+    defer Io.Dir.cwd().deleteFile(io, compressed_filename) catch {};
 
-    compressFile(allocator, .{ .file = test_filename, .output = compressed_filename });
+    compressFile(io, allocator, .{ .file = test_filename, .output = compressed_filename });
 
-    // Output file path for decompression
     const output_filename = "test_decompress_output.txt";
-    defer std.fs.cwd().deleteFile(output_filename) catch {};
+    defer Io.Dir.cwd().deleteFile(io, output_filename) catch {};
 
-    decompressFile(allocator, .{ .file = compressed_filename, .output = output_filename });
+    decompressFile(io, allocator, .{ .file = compressed_filename, .output = output_filename });
 
-    // Check output file matches original content
-    var file = try std.fs.cwd().openFile(output_filename, .{});
-    defer file.close();
-    const decompressed = try file.readToEndAlloc(allocator, 1024);
+    const decompressed = try Io.Dir.cwd().readFileAlloc(io, output_filename, allocator, .unlimited);
     try expectEqualStrings(test_content, decompressed);
 
-    decompressFile(allocator, .{ .file = compressed_filename });
+    decompressFile(io, allocator, .{ .file = compressed_filename });
     const default_output_filename = "test_decompress_output.txt";
-    defer std.fs.cwd().deleteFile(default_output_filename) catch {};
+    defer Io.Dir.cwd().deleteFile(io, default_output_filename) catch {};
 }
 
 fn fatal(comptime format: []const u8, args: anytype) noreturn {
@@ -339,14 +320,14 @@ const Options = struct {
 };
 
 const Operations = struct {
-    compressFn: fn (Allocator, Options) void,
-    decompressFn: fn (Allocator, Options) void,
+    compressFn: *const fn (std.Io, Allocator, Options) void,
+    decompressFn: *const fn (std.Io, Allocator, Options) void,
 };
 
 const ulz = @import("ulz");
 
 const std = @import("std");
+const Io = std.Io;
 const expectEqual = std.testing.expectEqual;
 const expectEqualStrings = std.testing.expectEqualStrings;
 const Allocator = std.mem.Allocator;
-const builtin = @import("builtin");
