@@ -11,67 +11,93 @@ const min_match_length: u16 = 4;
 const max_dict_len: usize = 256;
 const max_match_len: u16 = 0x3fff + min_match_length;
 
+/// Decodes ULZ compressed `in` into `out`, returning the number of bytes
+/// written.
+///
+/// Returns `error.OutputTooSmall` if `out` cannot hold the decoded data. Use
+/// `decodedLen` to size `out` exactly.
+pub fn decodeInto(in: []const u8, out: []u8) UlzError!usize {
+    var i: usize = 0;
+    var o: usize = 0;
+    while (i < in.len) {
+        const c = in[i];
+        i += 1;
+        var len: usize = undefined;
+        var src: [*]const u8 = undefined;
+        if (c < 0x80) {
+            // LIT: 0LLLLLLL, followed by `L + 1` literal bytes.
+            len = @as(usize, c) + 1;
+            if (in.len - i < len) return error.UnexpectedEof;
+            src = in.ptr + i;
+            i += len;
+        } else {
+            // CPY1: 10LLLLLL, or CPY2: 11LLLLLL LLLLLLLL, followed by `offset - 1`.
+            len = c & 0x3f;
+            if (c & 0x40 != 0) {
+                if (i >= in.len) return error.UnexpectedEof;
+                len = (len << 8) | in[i];
+                i += 1;
+            }
+            len += min_match_length;
+            if (i >= in.len) return error.UnexpectedEof;
+            const offset = @as(usize, in[i]) + 1;
+            i += 1;
+            if (offset > o) return error.InvalidInstruction;
+            src = out.ptr + o - offset;
+        }
+        if (out.len - o < len) return error.OutputTooSmall;
+        // Forward byte copy: required for overlapping CPY, and shared with LIT.
+        for (out[o..][0..len], src[0..len]) |*d, s| d.* = s;
+        o += len;
+    }
+    return o;
+}
+
+/// Returns the decoded length of ULZ compressed `in` without decoding it.
+///
+/// Validates `in` the same way as `decodeInto`. Can be called at comptime to
+/// size a static buffer for embedded data:
+///
+/// ```zig
+/// var buf: [ulz.decodedLen(asset) catch unreachable]u8 = undefined;
+/// ```
+pub fn decodedLen(in: []const u8) UlzError!usize {
+    if (@inComptime()) @setEvalBranchQuota(@intCast(in.len * 8 + 1000));
+    var i: usize = 0;
+    var o: usize = 0;
+    while (i < in.len) {
+        const c = in[i];
+        i += 1;
+        if (c < 0x80) {
+            const len = @as(usize, c) + 1;
+            if (in.len - i < len) return error.UnexpectedEof;
+            i += len;
+            o += len;
+        } else {
+            var len: usize = c & 0x3f;
+            if (c & 0x40 != 0) {
+                if (i >= in.len) return error.UnexpectedEof;
+                len = (len << 8) | in[i];
+                i += 1;
+            }
+            if (i >= in.len) return error.UnexpectedEof;
+            if (@as(usize, in[i]) + 1 > o) return error.InvalidInstruction;
+            i += 1;
+            o += len + min_match_length;
+        }
+    }
+    return o;
+}
+
 /// Decodes a ULZ compressed slice of bytes.
 ///
 /// The `allocator` is used to allocate the returned slice of decompressed data.
 /// The caller is responsible for freeing the returned slice.
 pub fn decode(allocator: std.mem.Allocator, compressed: []const u8) ![]u8 {
-    var output = std.ArrayList(u8).empty;
-
-    var i: usize = 0;
-    while (i < compressed.len) {
-        const command = compressed[i];
-        i += 1;
-
-        if (command & 0x80 == 0) {
-            // LIT: The 7 low bits of the command byte are `length - 1`.
-            const length: u8 = (command & 0x7f) + 1;
-
-            if (i + length > compressed.len) return UlzError.UnexpectedEof;
-
-            try output.appendSlice(allocator, compressed[i..][0..length]);
-            i += length;
-        } else {
-            // CPY
-            const length: u16 = if (command & 0x40 == 0) blk: {
-                // CPY1: 10LLLLLL (6 bits for length)
-                const len_ctl = command & 0x3f;
-                break :blk @as(u16, len_ctl) + min_match_length;
-            } else blk: {
-                // CPY2: 11LLLLLL LLLLLLLL (14 bits for length)
-                if (i >= compressed.len) return UlzError.UnexpectedEof;
-                const high_byte = command & 0x3f;
-                const low_byte = compressed[i];
-                i += 1;
-                const len_ctl = (@as(u16, high_byte) << 8) | @as(u16, low_byte);
-                break :blk len_ctl + min_match_length;
-            };
-
-            if (i >= compressed.len) return UlzError.UnexpectedEof;
-            const offset: u16 = @as(u16, compressed[i]) + 1;
-
-            i += 1;
-
-            // Capture the output length *before* we start appending. This provides
-            // a stable boundary for the history buffer.
-            const start_len = output.items.len;
-            if (offset > start_len) return UlzError.InvalidInstruction;
-
-            var p = start_len - offset;
-            var c: u16 = 0;
-            while (c < length) : (c += 1) {
-                try output.append(allocator, output.items[p]);
-                p += 1;
-                // If the read pointer reaches the end of the original history window,
-                // wrap it around to the start of that window.
-                if (p == start_len) {
-                    p = start_len - offset;
-                }
-            }
-        }
-    }
-
-    return output.toOwnedSlice(allocator);
+    const out = try allocator.alloc(u8, try decodedLen(compressed));
+    errdefer allocator.free(out);
+    _ = try decodeInto(compressed, out);
+    return out;
 }
 
 /// Encodes a slice of bytes using the ULZ compression format.
