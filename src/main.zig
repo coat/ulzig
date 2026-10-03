@@ -155,6 +155,46 @@ test run {
         &writer.writer,
         &no_args,
     ));
+
+    const missing_output_args = [_][:0]const u8{ "ulz", "-o" };
+    try std.testing.expectError(error.NotEnoughArguments, run(
+        io,
+        arena,
+        .{
+            .compressFn = mockOperation,
+            .decompressFn = mockOperation,
+        },
+        &writer.writer,
+        &missing_output_args,
+    ));
+
+    const missing_file_args = [_][:0]const u8{ "ulz", "-d" };
+    try std.testing.expectError(error.NotEnoughArguments, run(
+        io,
+        arena,
+        .{
+            .compressFn = mockOperation,
+            .decompressFn = mockOperation,
+        },
+        &writer.writer,
+        &missing_file_args,
+    ));
+    try expectEqual(0, visits.items.len);
+
+    const file_before_flag_args = [_][:0]const u8{ "ulz", "tests/test.txt.ulz", "-d" };
+    try run(
+        io,
+        arena,
+        .{
+            .compressFn = mockOperation,
+            .decompressFn = mockOperation,
+        },
+        &writer.writer,
+        &file_before_flag_args,
+    );
+    try expectEqual(1, visits.items.len);
+    try expectEqual(false, visits.items[0].compress);
+    try expectEqualStrings("tests/test.txt.ulz", visits.items[0].file.?);
 }
 
 const usage =
@@ -305,13 +345,15 @@ const Options = struct {
                 flags.compress = false;
             } else if (std.mem.eql(u8, "-o", arg) or std.mem.eql(u8, "--output", arg)) {
                 i += 1;
-                if (i > args.len) fatal("expected arg after '{s}'", .{arg});
+                if (i >= args.len) return error.NotEnoughArguments;
                 if (flags.output != null) fatal("duplicated {s} argument", .{arg});
                 flags.output = args[i];
-            } else if (i == args.len - 1) {
+            } else {
                 flags.file = arg;
             }
         }
+
+        if (flags.file == null) return error.NotEnoughArguments;
 
         return flags;
     }
