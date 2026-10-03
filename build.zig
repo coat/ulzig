@@ -28,17 +28,14 @@ pub fn build(b: *std.Build) void {
         .root_module = b.addModule("exe", exe_mod_options),
     });
 
-    const install_step = b.addInstallArtifact(exe, .{});
-    b.getInstallStep().dependOn(&install_step.step);
-
     if (optimize != .Debug and target.result.os.tag == .linux) {
-        const sstrip = std.Build.Step.Run.create(b, "run sstrip");
-        sstrip.addArgs(&.{"sstrip"});
+        const sstrip = b.addSystemCommand(&.{ "sh", "-c", "cp \"$1\" \"$2\" && sstrip \"$2\"", "sstrip" });
         sstrip.addArtifactArg(exe);
-        install_step.step.dependOn(&sstrip.step);
+        const stripped = sstrip.addOutputFileArg("ulz");
+        b.getInstallStep().dependOn(&b.addInstallBinFile(stripped, "ulz").step);
+    } else {
+        b.installArtifact(exe);
     }
-
-    b.installArtifact(exe);
 
     const run_step = b.step("run", "Run ulz");
 
