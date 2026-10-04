@@ -18,7 +18,7 @@ pub fn build(b: *std.Build) void {
         },
     };
 
-    if (optimize == .ReleaseSmall) {
+    if (optimize == .small) {
         exe_mod_options.unwind_tables = .none;
         exe_mod_options.single_threaded = true;
     }
@@ -28,7 +28,7 @@ pub fn build(b: *std.Build) void {
         .root_module = b.addModule("exe", exe_mod_options),
     });
 
-    if (optimize != .Debug and target.result.os.tag == .linux) {
+    if (optimize != .debug and target.result.os.tag == .linux) {
         const sstrip = b.addSystemCommand(&.{ "sh", "-c", "cp \"$1\" \"$2\" && sstrip \"$2\"", "sstrip" });
         sstrip.addArtifactArg(exe);
         const stripped = sstrip.addOutputFileArg("ulz");
@@ -43,10 +43,7 @@ pub fn build(b: *std.Build) void {
     run_step.dependOn(&run_cmd.step);
 
     run_cmd.step.dependOn(b.getInstallStep());
-
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
-    }
+    run_cmd.addPassthruArgs();
 
     const mod_tests = b.addTest(.{
         .root_module = mod,
@@ -85,21 +82,23 @@ pub fn build(b: *std.Build) void {
         run_test_steps.append(b.allocator, run_exe_tests) catch @panic("OOM");
         run_test_steps.append(b.allocator, run_tests) catch @panic("OOM");
 
-        const kcov_bin = b.findProgram(&.{"kcov"}, &.{}) catch "kcov";
+        const kcov_bin = b.findProgramLazy(.{ .names = &.{"kcov"} });
 
         const merge_step = std.Build.Step.Run.create(b, "merge coverage");
-        merge_step.addArgs(&.{ kcov_bin, "--merge" });
+        merge_step.addFileArg(kcov_bin);
+        merge_step.addArg("--merge");
         merge_step.rename_step_with_output_arg = false;
-        const merged_coverage_output = merge_step.addOutputFileArg(".");
+        const merged_coverage_output = merge_step.addOutputFileArg2(".", .{});
 
         for (run_test_steps.items) |step| {
             step.setName(b.fmt("{s} (collect coverage)", .{step.step.name}));
 
             // prepend the kcov exec args
             const argv = step.argv.toOwnedSlice(b.allocator) catch @panic("OOM");
-            step.addArgs(&.{ kcov_bin, "--collect-only" });
-            step.addPrefixedDirectoryArg("--include-pattern=", b.path("src"));
-            merge_step.addDirectoryArg(step.addOutputFileArg(step.producer.?.name));
+            step.addFileArg(kcov_bin);
+            step.addArg("--collect-only");
+            step.addDirectoryArg2(b.path("src"), .{ .prefix = "--include-pattern=", .make_absolute = true });
+            merge_step.addDirectoryArg(step.addOutputFileArg2(step.producer.?.name, .{}));
             step.argv.appendSlice(b.allocator, argv) catch @panic("OOM");
         }
 
